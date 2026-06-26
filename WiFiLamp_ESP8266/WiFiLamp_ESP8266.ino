@@ -23,6 +23,9 @@ const char* WIFI_PASS = "PASSWORD";
 #define LED_TYPE          WS2812B
 #define COLOR_ORDER       GRB
 
+const uint8_t BUTTON_ACTIVE_LEVEL = HIGH;
+const uint8_t BUTTON_PIN_MODE = INPUT;
+
 const uint8_t LED_SUPPLY_VOLTS = 5;
 const uint16_t LED_MAX_MILLIAMPS = 1300;
 
@@ -114,7 +117,19 @@ uint32_t btnLastChangeMs = 0;
 uint32_t btnPressStartMs = 0;
 uint32_t btnLastReleaseMs = 0;
 uint8_t clickCount = 0;
-bool longPressHandled = false;
+bool holdBrightnessActive = false;
+int8_t brightnessHoldDir = 1;
+uint32_t lastBrightnessStepMs = 0;
+bool brightnessHoldPaused = false;
+uint32_t brightnessHoldPauseStartMs = 0;
+
+const uint16_t BUTTON_DEBOUNCE_MS = 45;
+const uint16_t BUTTON_CLICK_MAX_MS = 500;
+const uint16_t BUTTON_MULTI_CLICK_MS = 520;
+const uint16_t BUTTON_LONG_PRESS_MS = 700;
+const uint16_t BRIGHTNESS_HOLD_STEP_MS = 35;
+const uint16_t BRIGHTNESS_HOLD_PAUSE_MS = 1000;
+const uint8_t BRIGHTNESS_HOLD_STEP = 5;
 
 uint8_t hueBase = 0;
 uint8_t heat[MATRIX_WIDTH][MATRIX_HEIGHT];
@@ -557,10 +572,65 @@ void nextEffect() {
   setMode((cfg.mode + 1) % MODE_COUNT);
 }
 
-void toggleGroup() {
-  if (cfg.mode <= MODE_NIGHT_LIGHT) setMode(MODE_CLOCK);
-  else if (cfg.mode == MODE_CLOCK || cfg.mode == MODE_DATE) setMode(MODE_SCROLL_TEXT);
-  else setMode(MODE_FIRE);
+void previousEffect() {
+  if (cfg.mode == 0) setMode(MODE_COUNT - 1);
+  else setMode(cfg.mode - 1);
+}
+
+void executeButtonClicks(uint8_t clicks) {
+  if (clicks == 1) {
+    cfg.power = !cfg.power;
+    FastLED.setBrightness(cfg.power ? cfg.brightness : 0);
+  } else if (clicks == 2) {
+    nextEffect();
+  } else if (clicks >= 3) {
+    previousEffect();
+  }
+}
+
+void startBrightnessHold(uint32_t now) {
+  holdBrightnessActive = true;
+  clickCount = 0;
+  brightnessHoldDir = (cfg.brightness >= 255) ? -1 : 1;
+  brightnessHoldPaused = (cfg.brightness >= 255);
+  brightnessHoldPauseStartMs = now;
+  lastBrightnessStepMs = 0;
+  cfg.power = 1;
+  FastLED.setBrightness(cfg.brightness);
+}
+
+void stopBrightnessHold() {
+  holdBrightnessActive = false;
+  brightnessHoldPaused = false;
+}
+
+void updateButtonBrightness(uint32_t now) {
+  if (brightnessHoldPaused) {
+    if (now - brightnessHoldPauseStartMs < BRIGHTNESS_HOLD_PAUSE_MS) return;
+    brightnessHoldPaused = false;
+    lastBrightnessStepMs = now;
+  }
+
+  if (now - lastBrightnessStepMs < BRIGHTNESS_HOLD_STEP_MS) return;
+  lastBrightnessStepMs = now;
+
+  int nextBrightness = cfg.brightness + brightnessHoldDir * BRIGHTNESS_HOLD_STEP;
+  if (nextBrightness >= 255) {
+    cfg.brightness = 255;
+    brightnessHoldDir = -1;
+    brightnessHoldPaused = true;
+    brightnessHoldPauseStartMs = now;
+  } else if (nextBrightness <= 1) {
+    cfg.brightness = 1;
+    brightnessHoldDir = 1;
+    brightnessHoldPaused = true;
+    brightnessHoldPauseStartMs = now;
+  } else {
+    cfg.brightness = (uint8_t)nextBrightness;
+  }
+
+  cfg.power = 1;
+  FastLED.setBrightness(cfg.brightness);
 }
 
 void handleButton() {
@@ -572,30 +642,37 @@ void handleButton() {
     btnLastChangeMs = now;
   }
 
-  if (now - btnLastChangeMs > 30 && btnStableState != btnRawState) {
+  if (now - btnLastChangeMs >= BUTTON_DEBOUNCE_MS && btnStableState != btnRawState) {
     btnStableState = btnRawState;
-    if (btnStableState == LOW) {
+    bool buttonPressed = (btnStableState == BUTTON_ACTIVE_LEVEL);
+    if (buttonPressed) {
       btnPressStartMs = now;
-      longPressHandled = false;
     } else {
       uint32_t pressDur = now - btnPressStartMs;
-      if (pressDur < 700 && !longPressHandled) {
-        clickCount++;
+      if (holdBrightnessActive) {
+        stopBrightnessHold();
+      } else if (pressDur <= BUTTON_CLICK_MAX_MS) {
+        if (clickCount < 3) clickCount++;
         btnLastReleaseMs = now;
+        if (clickCount >= 3) {
+          executeButtonClicks(clickCount);
+          clickCount = 0;
+        }
       }
     }
   }
 
-  if (btnStableState == LOW && !longPressHandled && (now - btnPressStartMs > 900)) {
-    cfg.power = !cfg.power;
-    FastLED.setBrightness(cfg.power ? cfg.brightness : 0);
-    longPressHandled = true;
-    clickCount = 0;
+  bool buttonPressedNow = (btnStableState == BUTTON_ACTIVE_LEVEL);
+  if (buttonPressedNow && !holdBrightnessActive && (now - btnPressStartMs >= BUTTON_LONG_PRESS_MS)) {
+    startBrightnessHold(now);
   }
 
-  if (clickCount > 0 && (now - btnLastReleaseMs > 350)) {
-    if (clickCount == 1) nextEffect();
-    else toggleGroup();
+  if (buttonPressedNow && holdBrightnessActive) {
+    updateButtonBrightness(now);
+  }
+
+  if (!buttonPressedNow && clickCount > 0 && (now - btnLastReleaseMs >= BUTTON_MULTI_CLICK_MS)) {
+    executeButtonClicks(clickCount);
     clickCount = 0;
   }
 }
@@ -841,7 +918,10 @@ void updateEffects() {
 
 // ============================== SETUP / LOOP =================================
 void setup() {
-  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  pinMode(BUTTON_PIN, BUTTON_PIN_MODE);
+  btnRawState = digitalRead(BUTTON_PIN);
+  btnStableState = btnRawState;
+  btnLastChangeMs = millis();
   Serial.begin(115200);
   delay(50);
 
