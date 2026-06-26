@@ -11,8 +11,8 @@
 #if __has_include("secrets.h")
 #include "secrets.h"
 #else
-const char* WIFI_SSID = "YOUR_WIFI_SSID";
-const char* WIFI_PASS = "YOUR_WIFI_PASSWORD";
+const char* WIFI_SSID = "Wi - Fi";
+const char* WIFI_PASS = "PASSWORD";
 #endif
 
 #define LED_PIN           D4
@@ -24,13 +24,13 @@ const char* WIFI_PASS = "YOUR_WIFI_PASSWORD";
 #define COLOR_ORDER       GRB
 
 const uint8_t LED_SUPPLY_VOLTS = 5;
-const uint16_t LED_MAX_MILLIAMPS = 2500;
+const uint16_t LED_MAX_MILLIAMPS = 1300;
 
-const bool FONT_MIRROR_X = true;
+const bool FONT_MIRROR_X = false;
 const bool FONT_MIRROR_Y = false;
 
 const bool MATRIX_SERPENTINE = true;
-const uint8_t MATRIX_START_CORNER = 0;     // 0=TL, 1=TR, 2=BR, 3=BL
+const uint8_t MATRIX_START_CORNER = 3;     // 0=TL, 1=TR, 2=BR, 3=BL
 const bool MATRIX_ROWS_DIRECTION = true;   // true=rows, false=columns
 
 const int32_t UTC_OFFSET_MIN_SEC = -12L * 3600L;
@@ -61,6 +61,8 @@ enum DisplayMode : uint8_t {
   MODE_CLOCK,
   MODE_DATE,
   MODE_SCROLL_TEXT,
+  MODE_COLOR_SPIRAL,
+  MODE_PLASMA,
   MODE_COUNT
 };
 
@@ -78,7 +80,9 @@ const char* MODE_NAMES_RU[MODE_COUNT] = {
   "Ночная подсветка",
   "Часы",
   "Дата",
-  "Бегущая строка"
+  "Бегущая строка",
+  "Цветная спираль",
+  "Плазма"
 };
 
 struct Settings {
@@ -461,7 +465,7 @@ small{color:#94a3b8}
 <p><small>IP: <span id='ip'>-</span></small></p>
 </div>
 <script>
-const modeNames = ["Огонь","Камин","Радуга","Конфетти","Снег","Матричный дождь","Звездное небо","Перелив цвета","Бегущие огни","Статичный цвет","Ночная подсветка","Часы","Дата","Бегущая строка"];
+const modeNames = ["Огонь","Камин","Радуга","Конфетти","Снег","Матричный дождь","Звездное небо","Перелив цвета","Бегущие огни","Статичный цвет","Ночная подсветка","Часы","Дата","Бегущая строка","Цветная спираль","Плазма"];
 const modeSel=document.getElementById('mode'),br=document.getElementById('br'),sp=document.getElementById('sp'),col=document.getElementById('col'),txt=document.getElementById('txt'),tz=document.getElementById('tz'),ip=document.getElementById('ip');
 for(let i=0;i<modeNames.length;i++){const o=document.createElement('option');o.value=i;o.textContent=modeNames[i];modeSel.appendChild(o)}
 async function getState(){
@@ -618,7 +622,10 @@ void drawFire(bool fireplace) {
       heat[x][y] = qadd8(heat[x][y], random8(160, 255));
     }
     for (uint8_t y = 0; y < MATRIX_HEIGHT; y++) {
-      CRGB c = HeatColor(heat[x][y]);
+      uint8_t h = heat[x][y];
+      if (y == 0 && h < (fireplace ? 130 : 170)) h = (fireplace ? 130 : 170) + random8(20);
+      if (y == 1 && h < (fireplace ? 95 : 135)) h = (fireplace ? 95 : 135) + random8(20);
+      CRGB c = HeatColor(h);
       if (fireplace) c.nscale8_video(180);
       setPixelXY(x, MATRIX_HEIGHT - 1 - y, c);
     }
@@ -656,17 +663,20 @@ void drawSnow() {
 }
 
 void drawMatrixRain() {
-  fadeAll(45);
+  fill_solid(leds, NUM_LEDS, CRGB::Black);
   for (int x = 0; x < MATRIX_WIDTH; x++) {
-    if (random8() < map(cfg.speed, 1, 255, 8, 60)) rainDrops[x][0] = 255;
     for (int y = MATRIX_HEIGHT - 1; y > 0; y--) {
-      rainDrops[x][y] = qsub8(rainDrops[x][y - 1], random8(20, 80));
+      rainDrops[x][y] = qsub8(rainDrops[x][y - 1], random8(5, 18));
     }
-    rainDrops[x][0] = qsub8(rainDrops[x][0], random8(80, 150));
+    if (random8() < map(cfg.speed, 1, 255, 10, 70)) rainDrops[x][0] = 255;
+    else rainDrops[x][0] = qsub8(rainDrops[x][0], 28);
   }
   for (int y = 0; y < MATRIX_HEIGHT; y++) {
     for (int x = 0; x < MATRIX_WIDTH; x++) {
-      if (rainDrops[x][y]) setPixelXY(x, y, CRGB(0, rainDrops[x][y], 0));
+      if (rainDrops[x][y]) {
+        uint8_t v = rainDrops[x][y];
+        setPixelXY(x, y, CRGB(0, v, 0));
+      }
     }
   }
 }
@@ -693,6 +703,32 @@ void drawColorWave() {
     leds[i] = base;
     leds[i].nscale8_video(t);
   }
+}
+
+void drawColorSpiral() {
+  int8_t cx = (MATRIX_WIDTH - 1) / 2;
+  int8_t cy = (MATRIX_HEIGHT - 1) / 2;
+  for (int y = 0; y < MATRIX_HEIGHT; y++) {
+    for (int x = 0; x < MATRIX_WIDTH; x++) {
+      uint8_t dist = abs(x - cx) * 18 + abs(y - cy) * 18;
+      uint8_t wave = sin8(x * 18 + y * 12 + hueBase);
+      setPixelXY(x, y, CHSV(hueBase + dist + wave / 3, 240, 255));
+    }
+  }
+  hueBase += map(cfg.speed, 1, 255, 1, 5);
+}
+
+void drawPlasma() {
+  for (int y = 0; y < MATRIX_HEIGHT; y++) {
+    for (int x = 0; x < MATRIX_WIDTH; x++) {
+      uint16_t a = sin8(x * 16 + hueBase);
+      uint16_t b = sin8(y * 16 + hueBase / 2);
+      uint16_t c = sin8((x + y) * 10 + hueBase * 2);
+      uint8_t mix = (a + b + c) / 3;
+      setPixelXY(x, y, CHSV(mix + hueBase, 230, 180 + (mix / 4)));
+    }
+  }
+  hueBase += map(cfg.speed, 1, 255, 1, 4);
 }
 
 void drawRunningLights() {
@@ -797,6 +833,8 @@ void updateEffects() {
     case MODE_CLOCK: drawClock(); break;
     case MODE_DATE: drawDate(); break;
     case MODE_SCROLL_TEXT: drawScrollingText(); break;
+    case MODE_COLOR_SPIRAL: drawColorSpiral(); break;
+    case MODE_PLASMA: drawPlasma(); break;
     default: drawRainbow(); break;
   }
 }
